@@ -1,0 +1,81 @@
+ :root {
+            --primary-blue: #0d6efd;
+            --dark-blue: #0a2540;
+            --light-blue: #f0f7ff;
+            --glass-bg: rgba(255, 255, 255, 0.85);
+            --glass-border: rgba(255, 255, 255, 0.4);
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            color: var(--dark-blue);
+            overflow-x: hidden;
+            scroll-behavior: smooth;
+        }
+
+        /* Smooth Hover Animations */
+        .hover-lift {
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .hover-lift:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 1rem 3rem rgba(0,0,0,0.08) !important;
+        }
+
+        /* Glassmorphism utility */
+        .glass-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--glass-border);
+        }
+
+        /* Hero Section Custom Styles */
+        .hero-section {
+            background: linear-gradient(rgba(10, 37, 64, 0.75), rgba(10, 37, 64, 0.85)), 
+                        url('https://images.unsplash.com/photo-1541339907198-e08756dedf3f?q=80&w=1920&auto=format&fit=crop') no-repeat center center/cover;
+            min-height: 90vh;
+            display: flex;
+            align-items: center;
+        }
+
+        /* Floating AI Chat Button */
+        .floating-chat-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            z-index: 1050;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 15px rgba(13, 110, 253, 0.4);
+            transition: all 0.3s ease;
+        }
+        .floating-chat-btn:hover {
+            transform: scale(1.1) rotate(15deg);
+        }
+
+        /* Icon wrapper customization */
+        .icon-box {
+            width: 50px;
+            height: 50px;
+            background-color: var(--light-blue);
+            color: var(--primary-blue);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        /* تنسيق خاص بالزر النشط حالياً في القائمة */
+.navbar-nav .nav-link.active {
+    color: #0d6efd !important; /* لون الجامعة الأزرق */
+    font-weight: 700; /* جعل الخط أعرض قليلاً */
+    background-color: rgba(13, 110, 253, 0.08); /* خلفية مائية خفيفة جداً حول الكلمة */
+    border-radius: 20px; /* تدوير حواف الخلفية */
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+}

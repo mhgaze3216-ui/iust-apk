@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-iust_campus}
+      POSTGRES_USER: ${DB_USER:-iust_app}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in backend/.env}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./migrations/001_student_documents.sql:/docker-entrypoint-initdb.d/02-student-documents.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-iust_app}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in backend/.env}
+      DB_NAME: ${DB_NAME:-iust_campus}
+      DB_SSL: "false"
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

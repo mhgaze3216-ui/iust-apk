@@ -1,0 +1,9 @@
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/img/logo_iust.png"
+  image_path_ios: "assets/img/logo_iust_ios.png"
+  adaptive_icon_background: "#ffffff"
+  adaptive_icon_foreground: "assets/img/logo_iust_adaptive_foreground.png"
+  adaptive_icon_foreground_inset: 0
+  remove_alpha_ios: true
