@@ -3798,13 +3798,13 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'An unexpected server error occurred.' } });
 });
 
-const port = Number(process.env.PORT ?? '3000');
-if (!Number.isInteger(port) || port < 1 || port > 65535) {
+const PORT = Number(process.env.PORT || 3000);
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   throw new Error('PORT must be a valid TCP port.');
 }
 
-const server = app.listen(port, () => {
-  console.log(`IUST Campus API listening on port ${port}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`IUST Campus API listening on 0.0.0.0:${PORT}`);
 });
 
 const shutdown = async () => {
