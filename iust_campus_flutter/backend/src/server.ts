@@ -55,7 +55,7 @@ if (process.env.NODE_ENV === 'production' && allowedOrigins.length === 0) {
 }
 app.use(cors({
   origin(origin, callback) {
-    callback(null, !origin || allowedOrigins.includes(origin));
+    callback(null, !origin || origin === 'null' || allowedOrigins.includes(origin));
   },
   credentials: false,
 }));
