@@ -25,7 +25,7 @@ class ApiClient {
   static const _refreshTokenKey = 'iust_refresh_token';
   static const _baseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://localhost:3000/api/v1',
+    defaultValue: 'https://iust-apk-production.up.railway.app/api/v1',
   );
 
   final http.Client _http = http.Client();

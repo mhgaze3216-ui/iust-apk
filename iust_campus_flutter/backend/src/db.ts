@@ -7,11 +7,7 @@ const getPoolConfig = (): PoolConfig => {
   const user = process.env.DB_USER;
   const database = process.env.DB_NAME;
 
-  if (host || user || database) {
-    if (!host || !user || !database) {
-      throw new Error('DB_HOST, DB_USER, and DB_NAME must all be configured.');
-    }
-
+  if (host && user && database) {
     const port = Number(process.env.DB_PORT ?? '5432');
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error('DB_PORT must be an integer between 1 and 65535.');
@@ -29,14 +25,22 @@ const getPoolConfig = (): PoolConfig => {
       database,
       ssl: sslSetting === 'true' ? { rejectUnauthorized: true } : undefined,
       application_name: 'iust-campus-api',
+      connectionTimeoutMillis: 5000,
     };
   }
 
-  if (!connectionString) {
-    throw new Error('Configure DB_HOST/DB_USER/DB_NAME or DATABASE_URL.');
+  if (connectionString) {
+    if (host || user || database) {
+      console.warn('Ignoring incomplete DB_* settings because DATABASE_URL is configured.');
+    }
+    return {
+      connectionString,
+      application_name: 'iust-campus-api',
+      connectionTimeoutMillis: 5000,
+    };
   }
 
-  return { connectionString, application_name: 'iust-campus-api' };
+  throw new Error('Configure DB_HOST/DB_USER/DB_NAME together or provide DATABASE_URL.');
 };
 
 export const pool = new Pool(getPoolConfig());

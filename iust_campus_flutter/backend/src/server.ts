@@ -51,15 +51,11 @@ const allowedOrigins = (process.env.CORS_ORIGINS ?? '')
   .map((origin) => origin.trim())
   .filter(Boolean);
 if (process.env.NODE_ENV === 'production' && allowedOrigins.length === 0) {
-  throw new Error('CORS_ORIGINS must list trusted browser origins in production.');
+  console.warn('CORS_ORIGINS is empty; browser-origin requests will not receive CORS permission.');
 }
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
-      callback(null, true);
-      return;
-    }
-    callback(new Error('Origin is not allowed by CORS.'));
+    callback(null, !origin || allowedOrigins.includes(origin));
   },
   credentials: false,
 }));
@@ -195,8 +191,15 @@ const loginBody = z.object({
 });
 
 app.get('/health', asyncRoute(async (_req, res) => {
-  await pool.query('SELECT 1');
-  res.json({ data: { status: 'ok', database: 'connected' } });
+  try {
+    await pool.query('SELECT 1');
+    res.json({ data: { status: 'ok', database: 'connected' } });
+  } catch (error) {
+    console.error('Database health check failed:', error);
+    res.status(503).json({
+      error: { code: 'DATABASE_UNAVAILABLE', message: 'The database is temporarily unavailable.' },
+    });
+  }
 }));
 
 app.post('/api/v1/upload', requireAuth, uploadLimiter, receiveSingleFile, asyncRoute(async (req, res) => {

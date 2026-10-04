@@ -116,8 +116,10 @@ flutter run --dart-define=API_BASE_URL=http://localhost:3000/api/v1
 Use `http://10.0.2.2:3000/api/v1` from an Android emulator, `localhost` from
 Flutter web or an iOS simulator, or the development machine's LAN IP from a
 physical device. For Flutter web, add the actual web origin (including scheme
-and port) to `CORS_ORIGINS` and restart the server. The app defaults to
-`http://localhost:3000/api/v1` when `API_BASE_URL` is omitted.
+and port) to `CORS_ORIGINS` and restart the server. The app defaults to the deployed Railway API
+`https://iust-apk-production.up.railway.app/api/v1` when `API_BASE_URL` is
+omitted. Pass the localhost define above only when you want to target your
+local backend.
 
 ## Security and operations notes
 
