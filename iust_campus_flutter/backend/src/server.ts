@@ -1521,6 +1521,99 @@ app.get('/api/v1/students/me/doctors', requireAuth, requireRoles('student'), asy
   res.json({ data: result.rows });
 }));
 
+app.get('/api/v1/students/me/peers', requireAuth, requireRoles('student'), asyncRoute(async (req, res) => {
+  const query = z.string().trim().min(2).max(80).parse(req.query.q);
+  const result = await pool.query(
+    `SELECT id, username, full_name AS "fullName"
+     FROM users
+     WHERE role = 'student' AND status = 'active' AND id <> $1
+       AND (username ILIKE '%' || $2 || '%' OR full_name ILIKE '%' || $2 || '%')
+     ORDER BY full_name, username
+     LIMIT 50`,
+    [principalOf(req).id, query],
+  );
+  res.json({ data: result.rows });
+}));
+
+app.post('/api/v1/students/me/direct-conversations', requireAuth, requireRoles('student'), asyncRoute(async (req, res) => {
+  const { studentId: peerId } = z.object({
+    studentId: z.string().uuid(),
+  }).strict().parse(req.body);
+  const studentId = principalOf(req).id;
+  if (peerId === studentId) {
+    throw new HttpError(400, 'You cannot start a conversation with yourself.', 'INVALID_PEER');
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const peer = await client.query(
+      `SELECT id, username, full_name AS "fullName"
+       FROM users
+       WHERE id = $1 AND role = 'student' AND status = 'active'`,
+      [peerId],
+    );
+    if (!peer.rowCount) throw new HttpError(404, 'Active student not found.', 'STUDENT_NOT_FOUND');
+
+    await client.query(
+      `SELECT pg_advisory_xact_lock(
+         hashtext(LEAST($1::text, $2::text)),
+         hashtext(GREATEST($1::text, $2::text))
+       )`,
+      [studentId, peerId],
+    );
+    const existing = await client.query(
+      `SELECT c.id
+       FROM conversations c
+       JOIN conversation_participants mine
+         ON mine.conversation_id = c.id AND mine.user_id = $1
+       JOIN conversation_participants peer
+         ON peer.conversation_id = c.id AND peer.user_id = $2
+       WHERE c.course_id IS NULL
+         AND (SELECT count(*) FROM conversation_participants p
+              WHERE p.conversation_id = c.id) = 2
+       LIMIT 1`,
+      [studentId, peerId],
+    );
+
+    let conversationId: string;
+    let status: number;
+    if (existing.rowCount) {
+      conversationId = existing.rows[0].id;
+      status = 200;
+    } else {
+      const created = await client.query(
+        `INSERT INTO conversations (course_id) VALUES (NULL) RETURNING id`,
+      );
+      conversationId = created.rows[0].id;
+      await client.query(
+        `INSERT INTO conversation_participants (conversation_id, user_id)
+         VALUES ($1, $2), ($1, $3)`,
+        [conversationId, studentId, peerId],
+      );
+      status = 201;
+    }
+
+    await client.query('COMMIT');
+    res.status(status).json({
+      data: {
+        id: conversationId,
+        peerId,
+        peerUsername: peer.rows[0].username,
+        peerName: peer.rows[0].fullName,
+        peerRole: 'student',
+        courseId: null,
+        courseName: null,
+      },
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
 app.post('/api/v1/students/me/conversations', requireAuth, requireRoles('student'), asyncRoute(async (req, res) => {
   const body = z.object({ doctorId: z.string().uuid(), courseId: z.string().uuid() }).parse(req.body);
   const studentId = principalOf(req).id;
@@ -1569,6 +1662,8 @@ app.post('/api/v1/students/me/conversations', requireAuth, requireRoles('student
 app.get('/api/v1/students/me/conversations', requireAuth, requireRoles('student'), asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT c.id, c.course_id AS "courseId", course.name_ar AS "courseName",
+            other.id AS "peerId", other.username AS "peerUsername",
+            other.role AS "peerRole", other.full_name AS "peerName",
             other.id AS "doctorId", other.full_name AS "doctorName",
             c.created_at AS "createdAt",
             (SELECT count(*)::int FROM chat_messages m

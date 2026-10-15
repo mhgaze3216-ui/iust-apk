@@ -93,7 +93,9 @@ All routes below require role `student`; the server uses the authenticated user'
 | `POST /students/me/feed/:postId/comments` | `{ "content": "..." }` |
 | `PUT /students/me/feed/:postId/reaction` | `{ "liked": true, "following": false }`; idempotent upsert |
 | `GET /students/me/doctors` | Instructors from the student's enrolled sections |
-| `GET /students/me/conversations` | Participant conversations, unread counts |
+| `GET /students/me/peers?q=` | Search active student accounts by username or full name (minimum 2 characters; excludes the caller; maximum 50 results) |
+| `GET /students/me/conversations` | Participant conversations with peer identity/role and unread counts; includes course chats and direct student chats |
+| `POST /students/me/direct-conversations` | `{ "studentId": "uuid" }`; create or return a private direct conversation with another active student; self-chat is rejected |
 | `POST /students/me/conversations` | `{ "doctorId": "uuid", "courseId": "uuid" }`; require shared course |
 | `GET /students/me/conversations/:id/messages?cursor=` | Participant-only messages |
 | `POST /students/me/conversations/:id/messages` | `{ "body": "..." }`; participant-only |
@@ -102,6 +104,8 @@ All routes below require role `student`; the server uses the authenticated user'
 | `GET /students/me/calendar?termId=` | Academic calendar events, term dates and registration deadlines |
 | `GET /students/me/transport?date=` | Current university routes, departures and service alerts |
 | `POST /students/me/advising` | `{ "advisorUserId": "uuid", "subject": "...", "message": "..." }`; create advising request |
+
+Student-to-student conversations use the same participant-checked message list, send, and read endpoints shown above. A direct conversation has no course association; only its two participants can read or send messages.
 
 ## Doctor / faculty
 
@@ -180,7 +184,7 @@ Staff endpoints require `staff` or `admin`; administrative account/permission op
 
 - **Identity:** login, refresh, logout, password change, password reset-token consumption, current profile, and preferences. Forgot-password is present but returns `503 EMAIL_NOT_CONFIGURED`; there is no token-delivery provider.
 - **Public:** faculty, department, course, FAQ, service, transaction, scholarship, document metadata, news, transport, and campus-map reads.
-- **Student:** profile, courses, schedule, published grades, study plan, exams, advising read/create, library, calendar, transport, documents with owner-only signed downloads, department-filtered registration offerings/enroll/waitlist/drop, owned tasks, study sessions, notifications/read, enrolled-course feed/comments/reactions, enrolled doctors, and participant-only conversations/messages/read cursor.
+- **Student:** profile, courses, schedule, published grades, study plan, exams, advising read/create, library, calendar, transport, documents with owner-only signed downloads, department-filtered registration offerings/enroll/waitlist/drop, owned tasks, study sessions, notifications/read, enrolled-course feed/comments/reactions, enrolled doctors, searchable active-student directory, and participant-only course/direct conversations/messages/read cursor.
 - **Doctor:** profile, assigned courses/roster/grades/attendance, grade publication and attendance finalization (both lock completed records), assigned-section assignments/submissions/questions/exams/announcements, transport, notifications, and assigned-course participant conversations.
 - **Staff and service requests:** own/department-scoped request list/create/detail, permission- and department-scoped queue/assignment/status transitions, guest inquiry submit/track and department-scoped staff replies/status, appointment availability/list/create/reschedule/cancel, and appointment-slot management. Staff actions require both an individual `staff_profiles.permissions` assignment and the persisted role policy.
 - **Administration:** user search/update/permissions; Firebase-backed university document upload; FAQ CRUD; news and global announcement list/create/update; transport route/stops/departures list/create/update; report endpoints (explicit `503`); maintenance CRUD and system health/events; audit events; department-scoped student schedule read/create/update/delete; persisted role permission policies; academic events and term registration dates; and appointment-slot management.
