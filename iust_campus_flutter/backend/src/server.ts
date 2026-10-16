@@ -1508,6 +1508,148 @@ app.put('/api/v1/students/me/feed/:postId/reaction', requireAuth, requireRoles('
   res.json({ data: result.rows[0] });
 }));
 
+const feedVisibility = (postAlias: string, userAlias = 'feed_user') => `
+  (${postAlias}.scope = 'campus' OR (
+    ${postAlias}.scope = 'course' AND ${postAlias}.course_id IS NOT NULL AND (
+      (${userAlias}.role = 'student' AND EXISTS (
+        SELECT 1 FROM enrollments feed_enrollment
+        JOIN course_sections feed_section ON feed_section.id = feed_enrollment.section_id
+        WHERE feed_enrollment.student_user_id = ${userAlias}.id
+          AND feed_enrollment.status = 'enrolled'
+          AND feed_section.course_id = ${postAlias}.course_id
+      )) OR
+      (${userAlias}.role = 'doctor' AND EXISTS (
+        SELECT 1 FROM course_sections feed_section
+        WHERE feed_section.instructor_user_id = ${userAlias}.id
+          AND feed_section.course_id = ${postAlias}.course_id
+      ))
+    )
+  ))`;
+
+app.get('/api/v1/feed', requireAuth, requireRoles('student', 'doctor'), asyncRoute(async (req, res) => {
+  const principal = principalOf(req);
+  const scope = z.enum(['campus', 'course']).optional().parse(req.query.scope);
+  const courseId = z.string().uuid().optional().parse(req.query.courseId);
+  if (scope === 'course' && !courseId) {
+    throw new HttpError(400, 'A courseId is required for course feed.', 'VALIDATION_ERROR');
+  }
+  const result = await pool.query(
+    `SELECT p.id, p.author_user_id AS "studentId", author.id AS "authorUserId",
+            author.full_name AS "studentName", author.full_name AS "authorName",
+            author.role AS "authorRole", p.course_id AS "courseId",
+            COALESCE(c.name_ar, 'ساحة الحرم الجامعي') AS "courseName",
+            p.scope, p.title, p.content, p.type AS "postType",
+            p.created_at AS "createdAt",
+            count(DISTINCT comments.id)::int AS "commentsCount",
+            count(DISTINCT reactions.user_id) FILTER (WHERE reactions.is_liked)::int AS "likesCount",
+            COALESCE(bool_or(my_reaction.is_liked), false) AS "isLiked",
+            COALESCE(bool_or(my_reaction.is_following), false) AS "isFollowed"
+     FROM feed_posts p
+     JOIN users author ON author.id = p.author_user_id
+     JOIN users feed_user ON feed_user.id = $1
+     LEFT JOIN courses c ON c.id = p.course_id
+     LEFT JOIN feed_comments comments ON comments.post_id = p.id
+     LEFT JOIN feed_reactions reactions ON reactions.post_id = p.id
+     LEFT JOIN feed_reactions my_reaction ON my_reaction.post_id = p.id AND my_reaction.user_id = $1
+     WHERE ${feedVisibility('p')}
+       AND ($2::text IS NULL OR p.scope = $2)
+       AND ($3::uuid IS NULL OR p.course_id = $3)
+     GROUP BY p.id, author.id, c.id
+     ORDER BY p.created_at DESC LIMIT 100`,
+    [principal.id, scope ?? null, courseId ?? null],
+  );
+  res.json({ data: result.rows });
+}));
+
+app.post('/api/v1/feed', requireAuth, requireRoles('student', 'doctor'), asyncRoute(async (req, res) => {
+  const body = z.object({
+    scope: z.enum(['campus', 'course']),
+    courseId: z.string().uuid().nullable().optional(),
+    type: z.enum(['question', 'discussion', 'resource']),
+    title: z.string().trim().max(180).nullable().optional(),
+    content: z.string().trim().min(1).max(10000),
+  }).strict().parse(req.body);
+  const principal = principalOf(req);
+  const courseId = body.scope === 'course' ? body.courseId : null;
+  if (body.scope === 'course' && !courseId) {
+    throw new HttpError(400, 'A courseId is required for course feed.', 'VALIDATION_ERROR');
+  }
+  if (courseId) {
+    const access = await pool.query(
+      `SELECT 1 FROM course_sections cs
+       WHERE cs.course_id = $2 AND (
+         ($3::user_role = 'student' AND EXISTS (
+           SELECT 1 FROM enrollments e
+           WHERE e.section_id = cs.id AND e.student_user_id = $1 AND e.status = 'enrolled'
+         )) OR
+         ($3::user_role = 'doctor' AND cs.instructor_user_id = $1)
+       ) LIMIT 1`,
+      [principal.id, courseId, principal.role],
+    );
+    if (!access.rowCount) {
+      throw new HttpError(403, 'You must belong to the course to post there.', 'COURSE_NOT_ACCESSIBLE');
+    }
+  }
+  const result = await pool.query(
+    `INSERT INTO feed_posts (author_user_id, course_id, scope, type, title, content)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, author_user_id AS "authorUserId", course_id AS "courseId",
+       scope, type AS "postType", title, content, created_at AS "createdAt"`,
+    [principal.id, courseId, body.scope, body.type, body.title ?? null, body.content],
+  );
+  res.status(201).json({ data: { ...result.rows[0], authorRole: principal.role, authorName: principal.fullName } });
+}));
+
+app.get('/api/v1/feed/:postId/comments', requireAuth, requireRoles('student', 'doctor'), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT comment.id, comment.post_id AS "postId", comment.author_user_id AS "studentId",
+            author.id AS "authorUserId", author.full_name AS "studentName",
+            author.full_name AS "authorName", author.role AS "authorRole",
+            comment.content, comment.created_at AS "createdAt"
+     FROM feed_posts post
+     JOIN users feed_user ON feed_user.id = $2
+     JOIN feed_comments comment ON comment.post_id = post.id
+     JOIN users author ON author.id = comment.author_user_id
+     WHERE post.id = $1 AND ${feedVisibility('post') }
+     ORDER BY comment.created_at`,
+    [req.params.postId, principalOf(req).id],
+  );
+  res.json({ data: result.rows });
+}));
+
+app.post('/api/v1/feed/:postId/comments', requireAuth, requireRoles('student', 'doctor'), asyncRoute(async (req, res) => {
+  const { content } = z.object({ content: z.string().trim().min(1).max(5000) }).strict().parse(req.body);
+  const principal = principalOf(req);
+  const result = await pool.query(
+    `INSERT INTO feed_comments (post_id, author_user_id, content)
+     SELECT post.id, $2, $3 FROM feed_posts post
+     JOIN users feed_user ON feed_user.id = $2
+     WHERE post.id = $1 AND ${feedVisibility('post')}
+     RETURNING id, post_id AS "postId", author_user_id AS "studentId",
+       content, created_at AS "createdAt"`,
+    [req.params.postId, principal.id, content],
+  );
+  if (!result.rowCount) throw new HttpError(404, 'Feed post not found.', 'NOT_FOUND');
+  res.status(201).json({ data: { ...result.rows[0], authorUserId: principal.id, authorName: principal.fullName, authorRole: principal.role } });
+}));
+
+app.put('/api/v1/feed/:postId/reaction', requireAuth, requireRoles('student', 'doctor'), asyncRoute(async (req, res) => {
+  const body = z.object({ liked: z.boolean(), following: z.boolean() }).strict().parse(req.body);
+  const principal = principalOf(req);
+  const result = await pool.query(
+    `INSERT INTO feed_reactions (post_id, user_id, is_liked, is_following)
+     SELECT post.id, $2, $3, $4 FROM feed_posts post
+     JOIN users feed_user ON feed_user.id = $2
+     WHERE post.id = $1 AND ${feedVisibility('post')}
+     ON CONFLICT (post_id, user_id) DO UPDATE
+       SET is_liked = EXCLUDED.is_liked, is_following = EXCLUDED.is_following
+     RETURNING post_id AS "postId", is_liked AS liked, is_following AS following`,
+    [req.params.postId, principal.id, body.liked, body.following],
+  );
+  if (!result.rowCount) throw new HttpError(404, 'Feed post not found.', 'NOT_FOUND');
+  res.json({ data: result.rows[0] });
+}));
+
 app.get('/api/v1/students/me/doctors', requireAuth, requireRoles('student'), asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT DISTINCT u.id AS "doctorId", u.full_name AS "doctorName",
@@ -1694,13 +1836,30 @@ app.get('/api/v1/students/me/conversations/:id/messages', requireAuth, requireRo
 
 app.post('/api/v1/students/me/conversations/:id/messages', requireAuth, requireRoles('student'), asyncRoute(async (req, res) => {
   const { body } = z.object({ body: z.string().trim().min(1).max(10000) }).parse(req.body);
+  const principal = principalOf(req);
   const result = await pool.query(
-    `INSERT INTO chat_messages (conversation_id, sender_user_id, body)
-     SELECT p.conversation_id, p.user_id, $3 FROM conversation_participants p
-     WHERE p.conversation_id = $1 AND p.user_id = $2
-     RETURNING id, conversation_id AS "conversationId", sender_user_id AS "senderUserId",
-       body, sent_at AS "sentAt"`,
-    [req.params.id, principalOf(req).id, body],
+    `WITH sent_message AS (
+       INSERT INTO chat_messages (conversation_id, sender_user_id, body)
+       SELECT participant.conversation_id, participant.user_id, $3
+       FROM conversation_participants participant
+       WHERE participant.conversation_id = $1 AND participant.user_id = $2
+       RETURNING id, conversation_id, sender_user_id, body, sent_at
+     ), notified AS (
+       INSERT INTO notifications (recipient_user_id, type, title, message, data)
+       SELECT participant.user_id, 'chat_message', 'رسالة جديدة',
+              $4, jsonb_build_object('conversationId', sent_message.conversation_id,
+                                     'messageId', sent_message.id)
+       FROM sent_message
+       JOIN conversation_participants participant
+         ON participant.conversation_id = sent_message.conversation_id
+        AND participant.user_id <> sent_message.sender_user_id
+       RETURNING id
+     )
+     SELECT message.id, message.conversation_id AS "conversationId",
+            message.sender_user_id AS "senderUserId", author.role AS "senderRole",
+            message.body, message.sent_at AS "sentAt"
+     FROM sent_message message JOIN users author ON author.id = message.sender_user_id`,
+    [req.params.id, principal.id, body, `رسالة جديدة من ${principal.fullName}`],
   );
   if (!result.rowCount) throw new HttpError(404, 'Conversation not found.', 'NOT_FOUND');
   res.status(201).json({ data: result.rows[0] });
@@ -1720,7 +1879,14 @@ app.get('/api/v1/doctors/me/conversations', requireAuth, requireRoles('doctor'),
   const result = await pool.query(
     `SELECT c.id, c.course_id AS "courseId", course.name_ar AS "courseName",
             student.id AS "studentId", student.full_name AS "studentName",
-            c.created_at AS "createdAt"
+            student.username AS "studentUsername", c.created_at AS "createdAt",
+            (SELECT count(*)::int FROM chat_messages m
+             WHERE m.conversation_id = c.id AND m.sender_user_id <> $1
+               AND (mine.last_read_at IS NULL OR m.sent_at > mine.last_read_at)) AS "unreadCount",
+            (SELECT m.body FROM chat_messages m
+             WHERE m.conversation_id = c.id ORDER BY m.sent_at DESC LIMIT 1) AS "lastMessage",
+            (SELECT m.sent_at FROM chat_messages m
+             WHERE m.conversation_id = c.id ORDER BY m.sent_at DESC LIMIT 1) AS "lastMessageAt"
      FROM conversations c
      JOIN conversation_participants mine ON mine.conversation_id = c.id AND mine.user_id = $1
      JOIN conversation_participants other_participant ON other_participant.conversation_id = c.id AND other_participant.user_id <> $1
@@ -1732,6 +1898,99 @@ app.get('/api/v1/doctors/me/conversations', requireAuth, requireRoles('doctor'),
     [principalOf(req).id],
   );
   res.json({ data: result.rows });
+}));
+
+app.get('/api/v1/doctors/me/students', requireAuth, requireRoles('doctor'), asyncRoute(async (req, res) => {
+  const query = z.string().trim().min(2).max(120).parse(req.query.q);
+  const result = await pool.query(
+    `SELECT DISTINCT student.id AS "studentId", student.username AS "studentUsername",
+            student.full_name AS "studentName",
+            cs.course_id AS "courseId", course.name_ar AS "courseName"
+     FROM course_sections cs
+     JOIN enrollments enrollment ON enrollment.section_id = cs.id
+     JOIN users student ON student.id = enrollment.student_user_id
+     JOIN courses course ON course.id = cs.course_id
+     WHERE cs.instructor_user_id = $1 AND enrollment.status = 'enrolled'
+       AND student.status = 'active'
+       AND (student.full_name ILIKE '%' || $2 || '%'
+         OR student.username ILIKE '%' || $2 || '%')
+     ORDER BY student.full_name, course.name_ar
+     LIMIT 100`,
+    [principalOf(req).id, query],
+  );
+  res.json({ data: result.rows });
+}));
+
+app.post('/api/v1/doctors/me/conversations', requireAuth, requireRoles('doctor'), asyncRoute(async (req, res) => {
+  const body = z.object({
+    studentId: z.string().uuid(),
+    courseId: z.string().uuid(),
+  }).strict().parse(req.body);
+  const doctorId = principalOf(req).id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const enrolled = await client.query(
+      `SELECT 1 FROM course_sections cs
+       JOIN enrollments e ON e.section_id = cs.id
+       WHERE cs.course_id = $1 AND cs.instructor_user_id = $2
+         AND e.student_user_id = $3 AND e.status = 'enrolled'
+       LIMIT 1`,
+      [body.courseId, doctorId, body.studentId],
+    );
+    if (!enrolled.rowCount) {
+      throw new HttpError(403, 'The student must be enrolled in one of your courses.', 'NOT_AUTHORIZED');
+    }
+    await client.query(
+      `SELECT pg_advisory_xact_lock(
+         hashtext(LEAST($1::text, $2::text)),
+         hashtext(GREATEST($1::text, $2::text))
+       )`,
+      [doctorId, body.studentId],
+    );
+    const existing = await client.query(
+      `SELECT c.id FROM conversations c
+       JOIN conversation_participants doctor
+         ON doctor.conversation_id = c.id AND doctor.user_id = $1
+       JOIN conversation_participants student
+         ON student.conversation_id = c.id AND student.user_id = $2
+       WHERE c.course_id = $3
+         AND (SELECT count(*) FROM conversation_participants p
+              WHERE p.conversation_id = c.id) = 2
+       LIMIT 1`,
+      [doctorId, body.studentId, body.courseId],
+    );
+    let conversationId: string;
+    if (existing.rowCount) {
+      conversationId = existing.rows[0].id;
+    } else {
+      const created = await client.query(
+        `INSERT INTO conversations (course_id) VALUES ($1) RETURNING id`,
+        [body.courseId],
+      );
+      conversationId = created.rows[0].id;
+      await client.query(
+        `INSERT INTO conversation_participants (conversation_id, user_id)
+         VALUES ($1, $2), ($1, $3)`,
+        [conversationId, doctorId, body.studentId],
+      );
+    }
+    const conversation = await client.query(
+      `SELECT c.id, c.course_id AS "courseId", course.name_ar AS "courseName",
+              student.id AS "studentId", student.full_name AS "studentName",
+              student.username AS "studentUsername"
+       FROM conversations c JOIN courses course ON course.id = c.course_id
+       JOIN users student ON student.id = $2 WHERE c.id = $1`,
+      [conversationId, body.studentId],
+    );
+    await client.query('COMMIT');
+    res.status(existing.rowCount ? 200 : 201).json({ data: conversation.rows[0] });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }));
 
 app.get('/api/v1/doctors/me/conversations/:id/messages', requireAuth, requireRoles('doctor'), asyncRoute(async (req, res) => {
@@ -1752,20 +2011,74 @@ app.get('/api/v1/doctors/me/conversations/:id/messages', requireAuth, requireRol
 
 app.post('/api/v1/doctors/me/conversations/:id/messages', requireAuth, requireRoles('doctor'), asyncRoute(async (req, res) => {
   const { body } = z.object({ body: z.string().trim().min(1).max(10000) }).parse(req.body);
+  const principal = principalOf(req);
   const result = await pool.query(
-    `INSERT INTO chat_messages (conversation_id, sender_user_id, body)
-     SELECT p.conversation_id, p.user_id, $3 FROM conversation_participants p
-     JOIN conversations c ON c.id = p.conversation_id
-     WHERE p.conversation_id = $1 AND p.user_id = $2 AND EXISTS (
-       SELECT 1 FROM course_sections cs
-       WHERE cs.course_id = c.course_id AND cs.instructor_user_id = $2
+    `WITH sent_message AS (
+       INSERT INTO chat_messages (conversation_id, sender_user_id, body)
+       SELECT p.conversation_id, p.user_id, $3 FROM conversation_participants p
+       JOIN conversations c ON c.id = p.conversation_id
+       WHERE p.conversation_id = $1 AND p.user_id = $2 AND EXISTS (
+         SELECT 1 FROM course_sections cs
+         WHERE cs.course_id = c.course_id AND cs.instructor_user_id = $2
+       )
+       RETURNING id, conversation_id, sender_user_id, body, sent_at
+     ), notified AS (
+       INSERT INTO notifications (recipient_user_id, type, title, message, data)
+       SELECT participant.user_id, 'chat_message', 'رسالة جديدة',
+              $4, jsonb_build_object('conversationId', sent_message.conversation_id,
+                                     'messageId', sent_message.id)
+       FROM sent_message
+       JOIN conversation_participants participant
+         ON participant.conversation_id = sent_message.conversation_id
+        AND participant.user_id <> sent_message.sender_user_id
+       RETURNING id
      )
-     RETURNING id, conversation_id AS "conversationId", sender_user_id AS "senderUserId",
-       body, sent_at AS "sentAt"`,
-    [req.params.id, principalOf(req).id, body],
+     SELECT message.id, message.conversation_id AS "conversationId",
+            message.sender_user_id AS "senderUserId", author.role AS "senderRole",
+            message.body, message.sent_at AS "sentAt"
+     FROM sent_message message JOIN users author ON author.id = message.sender_user_id`,
+    [req.params.id, principal.id, body, `رسالة جديدة من ${principal.fullName}`],
   );
   if (!result.rowCount) throw new HttpError(404, 'Conversation not found.', 'NOT_FOUND');
   res.status(201).json({ data: result.rows[0] });
+}));
+
+app.patch('/api/v1/doctors/me/conversations/:id/read', requireAuth, requireRoles('doctor'), asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `UPDATE conversation_participants participant SET last_read_at = now()
+     FROM conversations c
+     WHERE participant.conversation_id = c.id AND participant.conversation_id = $1
+       AND participant.user_id = $2
+       AND EXISTS (SELECT 1 FROM course_sections cs
+                   WHERE cs.course_id = c.course_id AND cs.instructor_user_id = $2)
+     RETURNING participant.last_read_at AS "lastReadAt"`,
+    [req.params.id, principalOf(req).id],
+  );
+  if (!result.rowCount) throw new HttpError(404, 'Conversation not found.', 'NOT_FOUND');
+  res.status(204).end();
+}));
+
+app.delete('/api/v1/conversations/:id/messages/:messageId', requireAuth, requireRoles('student', 'doctor'), asyncRoute(async (req, res) => {
+  const principal = principalOf(req);
+  const result = await pool.query(
+    `DELETE FROM chat_messages message
+     USING conversations conversation
+     WHERE message.id = $1 AND message.conversation_id = $2
+       AND conversation.id = message.conversation_id
+       AND message.sender_user_id = $3
+       AND EXISTS (SELECT 1 FROM conversation_participants participant
+                   WHERE participant.conversation_id = conversation.id
+                     AND participant.user_id = $3)
+       AND ($4::user_role = 'student' OR EXISTS (
+         SELECT 1 FROM course_sections section
+         WHERE section.course_id = conversation.course_id
+           AND section.instructor_user_id = $3
+       ))
+     RETURNING message.id`,
+    [req.params.messageId, req.params.id, principal.id, principal.role],
+  );
+  if (!result.rowCount) throw new HttpError(404, 'Message not found.', 'NOT_FOUND');
+  res.status(204).end();
 }));
 
 app.get('/api/v1/requests', requireAuth, asyncRoute(async (req, res) => {

@@ -55,7 +55,7 @@ docker compose up --build
 ```
 
 On a new database volume, Compose starts PostgreSQL and runs `schema.sql`
-followed by `migrations\001_student_documents.sql`. The API waits for the
+followed by the versioned SQL migrations. The API waits for the
 PostgreSQL health check before starting. The API health endpoint is
 `http://localhost:3000/health`; PostgreSQL is exposed on port 5432.
 Database state persists in the `postgres_data` volume. Stop with `Ctrl+C` or
@@ -73,8 +73,8 @@ volume. Apply later schema changes with the appropriate migration.
    psql "postgresql://iust_app:your-password@localhost:5432/iust_campus" -f .\schema.sql
    ```
 
-   For an existing database created before student document uploads were added,
-   apply `migrations\001_student_documents.sql` once using `psql -f`.
+   For an existing database, apply unapplied migrations in version order using
+   `psql -f`, including `migrations\002_campus_feed.sql` for public campus posts.
 
 2. Copy `.env.example` to `.env`, set `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, and a unique `JWT_SECRET`; configure `CORS_ORIGINS` for trusted web origins. `DATABASE_URL` remains supported when the individual `DB_*` settings are unset.
 3. To enable uploads, create a Firebase Storage bucket and a service account with object read/write permissions. Keep its JSON outside source control and configure `FIREBASE_STORAGE_BUCKET` plus `FIREBASE_SERVICE_ACCOUNT_PATH` (or one of the credential alternatives in the environment table).

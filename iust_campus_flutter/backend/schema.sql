@@ -297,7 +297,8 @@ CREATE TABLE study_sessions (
 CREATE TABLE feed_posts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   author_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  course_id UUID NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+  course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
+  scope TEXT NOT NULL DEFAULT 'course' CHECK (scope IN ('course', 'campus')),
   type post_type NOT NULL,
   title TEXT,
   content TEXT NOT NULL,
@@ -305,6 +306,7 @@ CREATE TABLE feed_posts (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX feed_posts_scope_created_idx ON feed_posts(scope, created_at DESC);
 CREATE TABLE feed_comments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   post_id UUID NOT NULL REFERENCES feed_posts(id) ON DELETE CASCADE,

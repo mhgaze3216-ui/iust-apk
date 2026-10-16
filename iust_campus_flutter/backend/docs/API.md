@@ -87,6 +87,10 @@ All routes below require role `student`; the server uses the authenticated user'
 | `GET /students/me/notifications?unreadOnly=` | User's notifications |
 | `PATCH /students/me/notifications/:notificationId/read` | Marks own notification read; `204` |
 | `POST /notifications/read-all` | Marks all own notifications read; returns `{ "data": { "updated": 0 } }` |
+| `GET /feed?scope=campus` | Authenticated students/doctors can read campus-wide posts and their accessible course posts; campus posts are visible regardless of course enrollment |
+| `POST /feed` | `{ "scope": "campus", "type": "discussion", "title": "...", "content": "..." }`; students and doctors may post campus-wide; use `scope: "course"` plus `courseId` for an enrolled/assigned course |
+| `GET /feed/:postId/comments` / `POST /feed/:postId/comments` | List/create comments for any campus post or accessible course post; student/doctor roles |
+| `PUT /feed/:postId/reaction` | `{ "liked": true, "following": false }`; student/doctor roles |
 | `GET /students/me/feed?courseId=&cursor=` | Enrolled-course feed, comments and caller reaction state |
 | `POST /students/me/feed` | `{ "courseId": "uuid", "type": "question|discussion|resource", "title": "...", "content": "..." }`; must be enrolled |
 | `GET /students/me/feed/:postId/comments` | Paginated comments |
@@ -100,12 +104,14 @@ All routes below require role `student`; the server uses the authenticated user'
 | `GET /students/me/conversations/:id/messages?cursor=` | Participant-only messages |
 | `POST /students/me/conversations/:id/messages` | `{ "body": "..." }`; participant-only |
 | `PATCH /students/me/conversations/:id/read` | Update own read cursor; `204` |
+| `DELETE /conversations/:id/messages/:messageId` | Delete an authored message as a conversation participant; `204`; deleting another participant's message returns `404` |
 | `GET /students/me/announcements` | Published announcements for the student's enrolled sections |
 | `GET /students/me/calendar?termId=` | Academic calendar events, term dates and registration deadlines |
 | `GET /students/me/transport?date=` | Current university routes, departures and service alerts |
 | `POST /students/me/advising` | `{ "advisorUserId": "uuid", "subject": "...", "message": "..." }`; create advising request |
 
 Student-to-student conversations use the same participant-checked message list, send, and read endpoints shown above. A direct conversation has no course association; only its two participants can read or send messages.
+Every successfully sent chat message creates an unread notification for the other participant. The clients refresh conversation unread counts and active messages every five seconds while the chat screens are open.
 
 ## Doctor / faculty
 
@@ -115,6 +121,14 @@ Require role `doctor`; enforce section assignment for every read/write.
 |---|---|
 | `GET /doctors/me` / `PATCH /doctors/me` | Profile and allowlisted editable fields |
 | `GET /doctors/me/courses?termId=` | Assigned sections, course, schedule, student counts |
+| `GET /doctors/me/students?q=` | Search active students enrolled in the doctor's sections (minimum 2 characters); results include eligible course IDs |
+| `GET /doctors/me/conversations` | Doctor's course conversations, peer data and unread counts |
+| `POST /doctors/me/conversations` | `{ "studentId": "uuid", "courseId": "uuid" }`; starts or reuses a conversation only when the student is enrolled in a course assigned to the doctor |
+| `GET/POST /doctors/me/conversations/:id/messages` | Participant- and assigned-course-checked message list/send; sending notifies the other participant |
+| `PATCH /doctors/me/conversations/:id/read` | Update own read cursor; `204` |
+| `DELETE /conversations/:id/messages/:messageId` | Delete only your own message as a conversation participant; `204` |
+
+Campus feed posts use `scope = "campus"` and a null `course_id`; they are visible to all authenticated students and doctors. Course-scoped posts remain restricted to enrolled students and assigned instructors. Apply `migrations/002_campus_feed.sql` to existing databases before using these routes.
 | `GET /doctors/me/sections/:sectionId/roster?q=` | Enrolled students; only assigned section |
 | `GET /doctors/me/sections/:sectionId/grades` | Grade components, weights and publication state |
 | `PUT /doctors/me/sections/:sectionId/grades/:studentId` | `{ "components": { "midterm": 24, "coursework": 18, "final": 42 } }`; validate bounds/weights and audit |

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -9,6 +11,7 @@ import 'doctor_community_screen.dart';
 import 'doctor_account_screen.dart';
 import 'doctor_chat_screen.dart';
 import '../../data/doctor_repository.dart';
+import '../../data/doctor_chat_repository.dart';
 
 // ── palette matching app identity ──────────────────────────────────────────
 const _navy = Color(0xFF073B4C);
@@ -27,6 +30,9 @@ class DoctorShell extends StatefulWidget {
 
 class _DoctorShellState extends State<DoctorShell> {
   int _index = 0;
+  Timer? _messagePollTimer;
+  bool _messagePollInProgress = false;
+  int? _lastUnreadMessageCount;
 
   static const _navItems = [
     _NavItem(icon: Icons.home_rounded, label: 'الرئيسية'),
@@ -54,6 +60,56 @@ class _DoctorShellState extends State<DoctorShell> {
       const DoctorCommunityScreen(),
       const DoctorAccountScreen(),
     ];
+  }
+
+  @override
+  void dispose() {
+    _messagePollTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startMessagePolling() {
+    if (_messagePollTimer != null) return;
+    _pollUnreadMessages();
+    _messagePollTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _pollUnreadMessages(),
+    );
+  }
+
+  Future<void> _pollUnreadMessages() async {
+    if (_messagePollInProgress) return;
+    _messagePollInProgress = true;
+    try {
+      final conversations = await DoctorChatRepository.instance
+          .getConversations();
+      if (!mounted) return;
+      final unreadCount = conversations.fold<int>(
+        0,
+        (count, conversation) => count + conversation.unreadCount,
+      );
+      final hasNewMessages =
+          _lastUnreadMessageCount != null &&
+          unreadCount > _lastUnreadMessageCount!;
+      _lastUnreadMessageCount = unreadCount;
+      if (hasNewMessages) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('لديك رسالة جديدة من أحد طلابك.'),
+              behavior: SnackBarBehavior.floating,
+              duration: Duration(seconds: 3),
+            ),
+          );
+      }
+    } catch (error, stackTrace) {
+      debugPrint(
+        'Failed to poll doctor chat notifications: $error\n$stackTrace',
+      );
+    } finally {
+      _messagePollInProgress = false;
+    }
   }
 
   String _resolveDoctorId() {
@@ -107,6 +163,7 @@ class _DoctorShellState extends State<DoctorShell> {
   }
 
   Widget _buildShell() {
+    _startMessagePolling();
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FA),
       extendBody: true,

@@ -1,15 +1,17 @@
-﻿import 'package:flutter/material.dart';
+import 'dart:async';
+
+import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+
+import '../../data/doctor_chat_repository.dart';
+import '../../data/student_chat_repository.dart';
 import '../../models/chat_models.dart';
-import '../../services/mock_chat_service.dart';
 import '../../services/doctor_session.dart';
-import '../../data/doctor_demo_data.dart';
 import 'widgets/doctor_back_button.dart';
 
 const _navy = Color(0xFF073B4C);
 const _blue = Color(0xFF0F6CBD);
-const _lightBg = Color(0xFFF8F9FA);
-const _lightBlue = Color(0xFFEAF4FB);
+const _lightBg = Color(0xFFF6F9FC);
 const _white = Colors.white;
 const _textMain = Color(0xFF0B2E3B);
 const _textSub = Color(0xFF6F7F89);
@@ -24,650 +26,678 @@ class DoctorChatScreen extends StatefulWidget {
 }
 
 class _DoctorChatScreenState extends State<DoctorChatScreen> {
-  final TextEditingController _searchCtrl = TextEditingController();
-  String _selectedFilter = 'الكل'; // 'الكل', 'معالج دقيق', 'الاحتمالات والإشارات العشوائية'
-  String _searchQuery = '';
+  final _repository = DoctorChatRepository.instance;
+  final _searchController = TextEditingController();
+  Timer? _searchDebounce;
+  Timer? _conversationTimer;
+  List<ChatThread> _conversations = [];
+  List<DoctorChatStudent> _students = [];
+  bool _loadingConversations = true;
+  bool _loadingStudents = false;
+  String? _conversationError;
+  String? _searchError;
 
-  final List<String> _filters = [
-    'الكل',
-    'معالج دقيق',
-    'الاحتمالات والإشارات العشوائية',
-  ];
+  String get _doctorId =>
+      widget.doctorId ?? DoctorSession.currentProfile.doctorId;
 
   @override
   void initState() {
     super.initState();
-    final did = widget.doctorId ?? DoctorSession.currentDoctorId;
-    MockChatService.ensureDoctorDemoData(did.isNotEmpty ? did : 'doctor-001');
-    _searchCtrl.addListener(() {
-      setState(() {
-        _searchQuery = _searchCtrl.text.trim().toLowerCase();
-      });
-    });
+    _loadConversations();
+    _conversationTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _loadConversations(silent: true),
+    );
+    _searchController.addListener(_scheduleSearch);
   }
 
   @override
   void dispose() {
-    _searchCtrl.dispose();
+    _conversationTimer?.cancel();
+    _searchDebounce?.cancel();
+    _searchController
+      ..removeListener(_scheduleSearch)
+      ..dispose();
     super.dispose();
   }
 
-  String _formatTimestamp(DateTime dt) {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final msgDate = DateTime(dt.year, dt.month, dt.day);
+  void _scheduleSearch() {
+    _searchDebounce?.cancel();
+    final query = _searchController.text.trim();
+    if (query.length < 2) {
+      setState(() {
+        _students = [];
+        _searchError = query.isEmpty ? null : 'أدخل حرفين على الأقل.';
+        _loadingStudents = false;
+      });
+      return;
+    }
+    _searchDebounce = Timer(
+      const Duration(milliseconds: 350),
+      () => _searchStudents(query),
+    );
+  }
 
-    if (msgDate == today) {
-      final h = dt.hour.toString().padLeft(2, '0');
-      final m = dt.minute.toString().padLeft(2, '0');
-      return '$h:$m';
-    } else if (msgDate == today.subtract(const Duration(days: 1))) {
-      return 'أمس';
-    } else if (msgDate == today.subtract(const Duration(days: 2))) {
-      return 'منذ يومين';
-    } else {
-      return '${dt.month}/${dt.day}';
+  Future<void> _searchStudents(String query) async {
+    if (!mounted) return;
+    setState(() {
+      _loadingStudents = true;
+      _searchError = null;
+    });
+    try {
+      final students = await _repository.searchStudents(query);
+      if (!mounted || query != _searchController.text.trim()) return;
+      setState(() {
+        _students = students;
+        _loadingStudents = false;
+      });
+    } catch (error, stackTrace) {
+      debugPrint(
+        'Failed to search doctor course students: $error\n$stackTrace',
+      );
+      if (!mounted) return;
+      setState(() {
+        _students = [];
+        _loadingStudents = false;
+        _searchError = 'تعذر البحث عن طلاب الشعب حالياً.';
+      });
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final did = widget.doctorId ?? DoctorSession.currentDoctorId;
-    final doctorId = did.isNotEmpty ? did : 'doctor-001';
+  Future<void> _loadConversations({bool silent = false}) async {
+    if (!silent && mounted) {
+      setState(() {
+        _loadingConversations = true;
+        _conversationError = null;
+      });
+    }
+    try {
+      final conversations = await _repository.getConversations();
+      if (!mounted) return;
+      setState(() {
+        _conversations = conversations;
+        _loadingConversations = false;
+        _conversationError = null;
+      });
+    } catch (error, stackTrace) {
+      debugPrint('Failed to load doctor conversations: $error\n$stackTrace');
+      if (!mounted) return;
+      setState(() {
+        _loadingConversations = false;
+        _conversationError = 'تعذر تحميل المحادثات حالياً.';
+      });
+    }
+  }
 
-    // 40-student stable roster
-    final roster = DoctorDemoData.roster;
+  Future<void> _openStudent(DoctorChatStudent student) async {
+    try {
+      final conversation = await _repository.startConversation(student);
+      if (!mounted) return;
+      await _openConversation(conversation);
+    } catch (error, stackTrace) {
+      debugPrint('Failed to start doctor conversation: $error\n$stackTrace');
+      if (!mounted) return;
+      _showError('تعذر بدء المحادثة مع الطالب.');
+    }
+  }
 
-    // Filter students by search and course
-    final filteredStudents = roster.where((student) {
-      final nameMatches = _searchQuery.isEmpty ||
-          student.name.toLowerCase().contains(_searchQuery);
-
-      if (!nameMatches) return false;
-
-      // Both courses currently share the same 40-student roster,
-      // but if a specific course is selected, we keep the student list
-      // filtered for that course context without visual duplication.
-      return true;
-    }).toList();
-
-    return PopScope(
-      canPop: true,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) DoctorBackButton.safePop(context);
-      },
-      child: Scaffold(
-        backgroundColor: _lightBg,
-        appBar: AppBar(
-          backgroundColor: _white,
-          elevation: 0,
-          surfaceTintColor: Colors.transparent,
-          centerTitle: true,
-          leading: const DoctorBackButton(),
-          title: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'محادثات الطلاب',
-                style: GoogleFonts.cairo(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w800,
-                  color: _textMain,
-                ),
-              ),
-              Text(
-                'طلاب مقرراتك الحالية',
-                style: GoogleFonts.cairo(
-                  fontSize: 11.5,
-                  color: _textSub,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-          bottom: PreferredSize(
-            preferredSize: const Size.fromHeight(1),
-            child: Container(color: _border, height: 1),
-          ),
-        ),
-        body: Directionality(
-          textDirection: TextDirection.rtl,
-          child: Column(
-            children: [
-              // ── Search Bar & Filter Chips ─────────────────────────────
-              Container(
-                color: _white,
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
-                child: Column(
-                  children: [
-                    TextField(
-                      controller: _searchCtrl,
-                      style: GoogleFonts.cairo(fontSize: 13),
-                      decoration: InputDecoration(
-                        hintText: 'ابحث باسم الطالب...',
-                        hintStyle: GoogleFonts.cairo(fontSize: 12, color: _textSub),
-                        prefixIcon: const Icon(Icons.search_rounded, size: 20, color: _navy),
-                        suffixIcon: _searchQuery.isNotEmpty
-                            ? IconButton(
-                                icon: const Icon(Icons.clear_rounded, size: 18),
-                                onPressed: () => _searchCtrl.clear(),
-                              )
-                            : null,
-                        filled: true,
-                        fillColor: const Color(0xFFF1F5F9),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14),
-                          borderSide: BorderSide.none,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: _filters.map((f) {
-                          final selected = _selectedFilter == f;
-                          return Padding(
-                            padding: const EdgeInsets.only(left: 8),
-                            child: FilterChip(
-                              label: Text(f),
-                              selected: selected,
-                              onSelected: (_) => setState(() => _selectedFilter = f),
-                              labelStyle: GoogleFonts.cairo(
-                                fontSize: 11.5,
-                                fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
-                                color: selected ? _white : _textMain,
-                              ),
-                              backgroundColor: const Color(0xFFF1F5F9),
-                              selectedColor: _navy,
-                              checkmarkColor: _white,
-                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10),
-                                side: BorderSide(
-                                  color: selected ? _navy : _border,
-                                ),
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const Divider(height: 1, color: _border),
-
-              // ── Contact List of 40 Students ───────────────────────────
-              Expanded(
-                child: filteredStudents.isEmpty
-                    ? Center(
-                        child: Text(
-                          'لا يوجد طلاب يطابقون البحث',
-                          style: GoogleFonts.cairo(fontSize: 13, color: _textSub),
-                        ),
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.all(16),
-                        itemCount: filteredStudents.length,
-                        itemBuilder: (context, index) {
-                          final student = filteredStudents[index];
-
-                          // Resolve active course name for this student based on filter
-                          final courseName = _selectedFilter != 'الكل'
-                              ? _selectedFilter
-                              : (index % 2 == 0 ? 'معالج دقيق' : 'الاحتمالات والإشارات العشوائية');
-                          final courseId = courseName == 'معالج دقيق'
-                              ? 'doctor-course-001'
-                              : 'doctor-course-002';
-
-                          final conv = MockChatService.getOrCreateConversation(
-                            studentId: student.id,
-                            doctorId: doctorId,
-                            doctorName: DoctorDemoData.profile.fullName,
-                            courseId: courseId,
-                            courseName: courseName,
-                          );
-
-                          final messages = MockChatService.getMessages(conv.conversationId);
-                          final hasMessages = messages.isNotEmpty;
-                          final lastMsg = hasMessages ? messages.last : null;
-                          final unread = hasMessages &&
-                              lastMsg?.senderRole == SenderRole.student &&
-                              lastMsg?.readAt == null;
-
-                          return _StudentConversationCard(
-                            studentName: student.name,
-                            studentId: student.id,
-                            courseName: conv.courseName ?? courseName,
-                            lastMessage: lastMsg?.body ?? 'بدء محادثة أكاديمية جديدة...',
-                            lastTime: lastMsg != null ? _formatTimestamp(lastMsg.sentAt) : '',
-                            hasUnread: unread,
-                            onTap: () async {
-                              if (lastMsg != null) {
-                                lastMsg.readAt = DateTime.now();
-                              }
-                              await Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  builder: (_) => _DoctorConversationView(
-                                    conversation: conv,
-                                    studentName: student.name,
-                                    doctorId: doctorId,
-                                  ),
-                                ),
-                              );
-                              setState(() {});
-                            },
-                          );
-                        },
-                      ),
-              ),
-            ],
-          ),
+  Future<void> _openConversation(ChatThread conversation) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => _DoctorConversationScreen(
+          conversation: conversation,
+          doctorId: _doctorId,
         ),
       ),
     );
+    if (mounted) _loadConversations(silent: true);
   }
-}
 
-class _StudentConversationCard extends StatelessWidget {
-  final String studentName;
-  final String studentId;
-  final String courseName;
-  final String lastMessage;
-  final String lastTime;
-  final bool hasUnread;
-  final VoidCallback onTap;
-
-  const _StudentConversationCard({
-    required this.studentName,
-    required this.studentId,
-    required this.courseName,
-    required this.lastMessage,
-    required this.lastTime,
-    required this.hasUnread,
-    required this.onTap,
-  });
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
+  }
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: _white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: hasUnread ? _blue.withValues(alpha: 0.4) : _border),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
+  Widget build(BuildContext context) => DefaultTabController(
+    length: 2,
+    child: Scaffold(
+      backgroundColor: _lightBg,
+      appBar: AppBar(
+        backgroundColor: _white,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+        leading: const DoctorBackButton(),
+        centerTitle: true,
+        title: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'محادثات الطلاب',
+              style: GoogleFonts.cairo(
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                color: _textMain,
+              ),
+            ),
+            Text(
+              'طلاب مقرراتك المسجلة',
+              style: GoogleFonts.cairo(fontSize: 11, color: _textSub),
+            ),
+          ],
+        ),
+        bottom: const TabBar(
+          labelColor: _navy,
+          unselectedLabelColor: _textSub,
+          indicatorColor: _navy,
+          tabs: [
+            Tab(text: 'المحادثات'),
+            Tab(text: 'البحث عن طالب'),
+          ],
+        ),
       ),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(16),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(16),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Row(
-              children: [
-                // Avatar with initial
-                Container(
-                  width: 46,
-                  height: 46,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: hasUnread ? _navy : _blue.withValues(alpha: 0.12),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Text(
-                    studentName.isNotEmpty ? studentName[0] : 'ط',
-                    style: GoogleFonts.cairo(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800,
-                      color: hasUnread ? _white : _blue,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Expanded(
-                            child: Text(
-                              studentName,
-                              style: GoogleFonts.cairo(
-                                fontSize: 14.5,
-                                fontWeight: hasUnread ? FontWeight.w800 : FontWeight.w700,
-                                color: _textMain,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          if (lastTime.isNotEmpty) ...[
-                            const SizedBox(width: 8),
-                            Text(
-                              lastTime,
-                              style: GoogleFonts.cairo(
-                                fontSize: 11,
-                                fontWeight: hasUnread ? FontWeight.w700 : FontWeight.w500,
-                                color: hasUnread ? _blue : _textSub,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                      const SizedBox(height: 2),
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                              decoration: BoxDecoration(
-                                color: _lightBlue,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                courseName,
-                                style: GoogleFonts.cairo(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700,
-                                  color: _blue,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              lastMessage,
-                              style: GoogleFonts.cairo(
-                                fontSize: 12,
-                                fontWeight: hasUnread ? FontWeight.w700 : FontWeight.w500,
-                                color: hasUnread ? _textMain : _textSub,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          if (hasUnread)
-                            Container(
-                              margin: const EdgeInsets.only(right: 6),
-                              width: 8,
-                              height: 8,
-                              decoration: const BoxDecoration(
-                                color: _blue,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),
-                const Icon(Icons.arrow_forward_ios_rounded, color: _textSub, size: 14),
-              ],
+      body: Directionality(
+        textDirection: TextDirection.rtl,
+        child: TabBarView(children: [_conversationList(), _studentSearch()]),
+      ),
+    ),
+  );
+
+  Widget _conversationList() {
+    if (_loadingConversations) {
+      return Center(
+        child: Text(
+          'جار تحميل المحادثات...',
+          style: GoogleFonts.cairo(color: _textSub),
+        ),
+      );
+    }
+    if (_conversationError != null) {
+      return _EmptyState(
+        message: _conversationError!,
+        action: () => _loadConversations(),
+      );
+    }
+    if (_conversations.isEmpty) {
+      return const _EmptyState(message: 'لا توجد محادثات بعد.');
+    }
+    return RefreshIndicator(
+      onRefresh: _loadConversations,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: _conversations.length,
+        itemBuilder: (context, index) {
+          final conversation = _conversations[index];
+          return _ConversationTile(
+            name: conversation.peerName,
+            subtitle: conversation.courseName ?? 'مقرر دراسي',
+            preview: conversation.unreadCount > 0
+                ? 'رسائل جديدة (${conversation.unreadCount})'
+                : 'افتح المحادثة لعرض الرسائل',
+            unreadCount: conversation.unreadCount,
+            onTap: () => _openConversation(conversation),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _studentSearch() => Column(
+    children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+        child: TextField(
+          controller: _searchController,
+          textInputAction: TextInputAction.search,
+          decoration: InputDecoration(
+            hintText: 'ابحث باسم الطالب أو اسم المستخدم',
+            prefixIcon: const Icon(Icons.search_rounded),
+            suffixIcon: IconButton(
+              tooltip: 'بحث',
+              onPressed: () => _searchStudents(_searchController.text.trim()),
+              icon: const Icon(Icons.arrow_forward_rounded),
+            ),
+            filled: true,
+            fillColor: _white,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: _border),
             ),
           ),
+          onSubmitted: _searchStudents,
         ),
       ),
-    );
-  }
+      if (_searchError != null)
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text(
+            _searchError!,
+            style: const TextStyle(color: Colors.redAccent),
+          ),
+        ),
+      Expanded(
+        child: _loadingStudents
+            ? const Center(child: CircularProgressIndicator())
+            : _students.isEmpty
+            ? _EmptyState(
+                message: _searchController.text.trim().length < 2
+                    ? 'ابحث بحرفين على الأقل بين طلاب شعبك.'
+                    : 'لا توجد نتائج مطابقة ضمن مقرراتك.',
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: _students.length,
+                itemBuilder: (context, index) {
+                  final student = _students[index];
+                  return _ConversationTile(
+                    name: student.fullName,
+                    subtitle: '${student.courseName} · @${student.username}',
+                    preview: 'ابدأ محادثة مباشرة',
+                    onTap: () => _openStudent(student),
+                  );
+                },
+              ),
+      ),
+    ],
+  );
 }
 
-class _DoctorConversationView extends StatefulWidget {
-  final Conversation conversation;
-  final String studentName;
-  final String doctorId;
-
-  const _DoctorConversationView({
+class _DoctorConversationScreen extends StatefulWidget {
+  const _DoctorConversationScreen({
     required this.conversation,
-    required this.studentName,
     required this.doctorId,
   });
 
+  final ChatThread conversation;
+  final String doctorId;
+
   @override
-  State<_DoctorConversationView> createState() => _DoctorConversationViewState();
+  State<_DoctorConversationScreen> createState() =>
+      _DoctorConversationScreenState();
 }
 
-class _DoctorConversationViewState extends State<_DoctorConversationView> {
-  final TextEditingController _ctrl = TextEditingController();
-  final ScrollController _scroll = ScrollController();
+class _DoctorConversationScreenState extends State<_DoctorConversationScreen> {
+  final _repository = DoctorChatRepository.instance;
+  final _controller = TextEditingController();
+  final _scrollController = ScrollController();
+  Timer? _refreshTimer;
   List<ChatMessage> _messages = [];
+  bool _loading = true;
+  bool _sending = false;
+  bool _requestInProgress = false;
+  String? _error;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _loadMessages();
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _loadMessages(),
+    );
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
-    _scroll.dispose();
+    _refreshTimer?.cancel();
+    _controller.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
-  void _load() {
-    setState(() {
-      _messages = List.from(
-        MockChatService.getMessages(widget.conversation.conversationId),
+  Future<void> _loadMessages({bool forceLoading = false}) async {
+    if (_requestInProgress) return;
+    _requestInProgress = true;
+    if (forceLoading && mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+    try {
+      final messages = await _repository.getMessages(
+        conversationId: widget.conversation.id,
+        currentUserId: widget.doctorId,
+        peerId: widget.conversation.peerId,
       );
-    });
+      await _repository.markRead(widget.conversation.id);
+      if (!mounted) return;
+      final changed = messages.length != _messages.length;
+      setState(() {
+        _messages = messages;
+        _loading = false;
+        _error = null;
+      });
+      if (changed) _scrollToLatest();
+    } catch (error, stackTrace) {
+      debugPrint('Failed to load doctor chat messages: $error\n$stackTrace');
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = 'تعذر تحميل الرسائل. تحقق من الاتصال وأعد المحاولة.';
+        });
+      }
+    } finally {
+      _requestInProgress = false;
+    }
   }
 
-  void _send() {
-    final body = _ctrl.text.trim();
-    if (body.isEmpty) return;
+  Future<void> _send() async {
+    final body = _controller.text.trim();
+    if (body.isEmpty || _sending) return;
+    setState(() => _sending = true);
+    try {
+      await _repository.sendMessage(
+        conversationId: widget.conversation.id,
+        body: body,
+      );
+      _controller.clear();
+      await _loadMessages();
+      _scrollToLatest();
+    } catch (error, stackTrace) {
+      debugPrint('Failed to send doctor chat message: $error\n$stackTrace');
+      if (mounted) _showError('تعذر إرسال الرسالة. حاول مرة أخرى.');
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
 
-    MockChatService.sendMessage(
-      conversationId: widget.conversation.conversationId,
-      receiverUserId: widget.conversation.studentId,
-      body: body,
-      senderUserId: widget.doctorId,
-      senderRole: SenderRole.doctor,
+  Future<void> _deleteMessage(ChatMessage message) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('حذف الرسالة'),
+        content: const Text('هل تريد حذف رسالتك؟ لا يمكن التراجع عن ذلك.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('حذف'),
+          ),
+        ],
+      ),
     );
-    _ctrl.clear();
-    _load();
+    if (confirmed != true) return;
+    try {
+      await _repository.deleteMessage(
+        conversationId: widget.conversation.id,
+        messageId: message.messageId,
+      );
+      if (mounted) {
+        setState(() {
+          _messages.removeWhere((item) => item.messageId == message.messageId);
+        });
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Failed to delete doctor chat message: $error\n$stackTrace');
+      if (mounted) _showError('تعذر حذف الرسالة. حاول مرة أخرى.');
+    }
+  }
+
+  void _scrollToLatest() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-        );
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
       }
     });
   }
 
-  String _formatMsgTime(DateTime dt) {
-    final h = dt.hour.toString().padLeft(2, '0');
-    final m = dt.minute.toString().padLeft(2, '0');
-    return '$h:$m';
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
   }
 
   @override
-  Widget build(BuildContext context) {
-    return PopScope(
-      canPop: true,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) DoctorBackButton.safePop(context);
-      },
-      child: Scaffold(
-        backgroundColor: _lightBg,
-        appBar: AppBar(
-          backgroundColor: _white,
-          elevation: 0,
-          surfaceTintColor: Colors.transparent,
-          centerTitle: true,
-          leading: const DoctorBackButton(),
-          title: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                widget.studentName,
-                style: GoogleFonts.cairo(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w800,
-                  color: _textMain,
-                ),
-              ),
-              if (widget.conversation.courseName != null)
-                Text(
-                  widget.conversation.courseName!,
-                  style: GoogleFonts.cairo(
-                    fontSize: 11,
-                    color: _blue,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-            ],
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: _lightBg,
+    appBar: AppBar(
+      backgroundColor: _white,
+      elevation: 0,
+      surfaceTintColor: Colors.transparent,
+      centerTitle: true,
+      leading: const DoctorBackButton(),
+      title: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            widget.conversation.peerName,
+            style: GoogleFonts.cairo(
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
+              color: _textMain,
+            ),
           ),
-          bottom: PreferredSize(
-            preferredSize: const Size.fromHeight(1),
-            child: Container(color: _border, height: 1),
+          Text(
+            widget.conversation.courseName ?? 'محادثة طالب',
+            style: GoogleFonts.cairo(fontSize: 11, color: _blue),
           ),
+        ],
+      ),
+      actions: [
+        IconButton(
+          tooltip: 'تحديث الرسائل',
+          onPressed: () => _loadMessages(forceLoading: _messages.isEmpty),
+          icon: const Icon(Icons.refresh_rounded, color: _navy),
         ),
-        body: Directionality(
-          textDirection: TextDirection.rtl,
-          child: Column(
-            children: [
-              Expanded(
-                child: _messages.isEmpty
-                    ? Center(
-                        child: Text(
-                          'لا توجد رسائل سابقة. يمكنك إرسال رسالة توجيهية الآن.',
-                          style: GoogleFonts.cairo(fontSize: 13, color: _textSub),
-                        ),
-                      )
-                    : ListView.builder(
-                        controller: _scroll,
-                        padding: const EdgeInsets.all(16),
-                        itemCount: _messages.length,
-                        itemBuilder: (context, i) {
-                          final msg = _messages[i];
-                          final isDoctor = msg.senderRole == SenderRole.doctor;
-                          return Align(
-                            alignment: isDoctor
-                                ? AlignmentDirectional.centerEnd
-                                : AlignmentDirectional.centerStart,
-                            child: Container(
-                              constraints: BoxConstraints(
-                                maxWidth: MediaQuery.of(context).size.width * 0.78,
-                              ),
-                              margin: const EdgeInsets.only(bottom: 12),
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                              decoration: BoxDecoration(
-                                color: isDoctor ? _navy : _white,
-                                borderRadius: BorderRadius.circular(16),
-                                border: Border.all(
-                                  color: isDoctor ? _navy : _border,
-                                ),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(alpha: 0.03),
-                                    blurRadius: 6,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
-                              ),
-                              child: Column(
-                                crossAxisAlignment: isDoctor
-                                    ? CrossAxisAlignment.end
-                                    : CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    msg.body,
-                                    style: GoogleFonts.cairo(
-                                      fontSize: 13.5,
-                                      color: isDoctor ? Colors.white : _textMain,
-                                      height: 1.4,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _formatMsgTime(msg.sentAt),
-                                    style: GoogleFonts.cairo(
-                                      fontSize: 10,
-                                      color: isDoctor
-                                          ? Colors.white.withValues(alpha: 0.7)
-                                          : _textSub,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-              ),
-
-              // ── Input Row ─────────────────────────────────────────────
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                decoration: const BoxDecoration(
-                  color: _white,
-                  border: Border(top: BorderSide(color: _border)),
+      ],
+    ),
+    body: Directionality(
+      textDirection: TextDirection.rtl,
+      child: Column(
+        children: [
+          if (_error != null)
+            MaterialBanner(
+              content: Text(_error!),
+              actions: [
+                TextButton(
+                  onPressed: () => _loadMessages(forceLoading: true),
+                  child: const Text('إعادة المحاولة'),
                 ),
-                child: SafeArea(
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _ctrl,
-                          style: GoogleFonts.cairo(fontSize: 13),
-                          textInputAction: TextInputAction.send,
-                          onSubmitted: (_) => _send(),
-                          decoration: InputDecoration(
-                            hintText: 'اكتب رسالة...',
-                            hintStyle: GoogleFonts.cairo(fontSize: 12, color: _textSub),
-                            filled: true,
-                            fillColor: const Color(0xFFF1F5F9),
-                            contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 10),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(24),
-                              borderSide: BorderSide.none,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Container(
-                        decoration: const BoxDecoration(
-                          color: _navy,
-                          shape: BoxShape.circle,
-                        ),
-                        child: IconButton(
-                          icon: const Icon(Icons.send_rounded, color: Colors.white, size: 18),
-                          tooltip: 'إرسال',
-                          onPressed: _send,
-                        ),
-                      ),
-                    ],
+              ],
+            ),
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _messages.isEmpty
+                ? const _EmptyState(
+                    message: 'لا توجد رسائل بعد، ابدأ المحادثة.',
+                  )
+                : ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.all(14),
+                    itemCount: _messages.length,
+                    itemBuilder: (context, index) {
+                      final message = _messages[index];
+                      final isMe = message.senderUserId == widget.doctorId;
+                      return GestureDetector(
+                        onLongPress: isMe
+                            ? () => _deleteMessage(message)
+                            : null,
+                        child: _MessageBubble(message: message, isMe: isMe),
+                      );
+                    },
                   ),
-                ),
+          ),
+          SafeArea(
+            child: Container(
+              color: _white,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _controller,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => _send(),
+                      decoration: InputDecoration(
+                        hintText: 'اكتب رسالة...',
+                        filled: true,
+                        fillColor: const Color(0xFFF1F5F9),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(24),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filled(
+                    onPressed: _sending ? null : _send,
+                    icon: _sending
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.send_rounded),
+                  ),
+                ],
               ),
-            ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _ConversationTile extends StatelessWidget {
+  const _ConversationTile({
+    required this.name,
+    required this.subtitle,
+    required this.preview,
+    required this.onTap,
+    this.unreadCount = 0,
+  });
+
+  final String name;
+  final String subtitle;
+  final String preview;
+  final VoidCallback onTap;
+  final int unreadCount;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    color: _white,
+    margin: const EdgeInsets.only(bottom: 10),
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(16),
+      side: const BorderSide(color: _border),
+    ),
+    child: ListTile(
+      onTap: onTap,
+      leading: CircleAvatar(
+        backgroundColor: unreadCount > 0 ? _navy : _blue.withValues(alpha: .12),
+        child: Text(
+          name.isEmpty ? 'ط' : name.characters.first,
+          style: TextStyle(
+            color: unreadCount > 0 ? _white : _blue,
+            fontWeight: FontWeight.w700,
           ),
         ),
       ),
-    );
-  }
+      title: Text(
+        name,
+        style: GoogleFonts.cairo(fontWeight: FontWeight.w700, color: _textMain),
+      ),
+      subtitle: Text(
+        '$subtitle\n$preview',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: GoogleFonts.cairo(fontSize: 11, color: _textSub),
+      ),
+      isThreeLine: true,
+      trailing: unreadCount > 0
+          ? CircleAvatar(
+              radius: 12,
+              backgroundColor: _blue,
+              child: Text(
+                '$unreadCount',
+                style: const TextStyle(color: _white, fontSize: 11),
+              ),
+            )
+          : const Icon(Icons.chevron_left_rounded, color: _textSub),
+    ),
+  );
+}
+
+class _MessageBubble extends StatelessWidget {
+  const _MessageBubble({required this.message, required this.isMe});
+
+  final ChatMessage message;
+  final bool isMe;
+
+  @override
+  Widget build(BuildContext context) => Align(
+    alignment: isMe
+        ? AlignmentDirectional.centerEnd
+        : AlignmentDirectional.centerStart,
+    child: Container(
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.sizeOf(context).width * .78,
+      ),
+      margin: const EdgeInsets.only(bottom: 9),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: isMe ? _navy : _white,
+        borderRadius: BorderRadius.circular(16),
+        border: isMe ? null : Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            message.body,
+            style: GoogleFonts.cairo(
+              fontSize: 13.5,
+              color: isMe ? _white : _textMain,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${message.sentAt.hour.toString().padLeft(2, '0')}:'
+            '${message.sentAt.minute.toString().padLeft(2, '0')}'
+            '${isMe ? ' · اضغط مطولاً للحذف' : ''}',
+            style: GoogleFonts.cairo(
+              fontSize: 9,
+              color: isMe ? Colors.white70 : _textSub,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({required this.message, this.action});
+
+  final String message;
+  final VoidCallback? action;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: GoogleFonts.cairo(color: _textSub),
+          ),
+          if (action != null)
+            TextButton(onPressed: action, child: const Text('إعادة المحاولة')),
+        ],
+      ),
+    ),
+  );
 }

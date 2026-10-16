@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -10,6 +12,7 @@ import 'student_doctor_chat_screen.dart';
 
 import '../../services/student_session.dart';
 import '../../data/student_repository.dart';
+import '../../data/student_chat_repository.dart';
 
 // ── palette ────────────────────────────────────────────────────────────────
 const _navy = Color(0xFF073B4C);
@@ -27,6 +30,9 @@ class StudentShell extends StatefulWidget {
 
 class _StudentShellState extends State<StudentShell> {
   int _index = 0;
+  Timer? _messagePollTimer;
+  bool _messagePollInProgress = false;
+  int? _lastUnreadMessageCount;
 
   static const _navItems = [
     _NavItem(icon: Icons.home_rounded, label: 'الرئيسية'),
@@ -52,7 +58,58 @@ class _StudentShellState extends State<StudentShell> {
         StudentAccountScreen(studentId: sid),
       ];
     }
+
     return _pages!;
+  }
+
+  @override
+  void dispose() {
+    _messagePollTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startMessagePolling() {
+    if (_messagePollTimer != null) return;
+    _pollUnreadMessages();
+    _messagePollTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _pollUnreadMessages(),
+    );
+  }
+
+  Future<void> _pollUnreadMessages() async {
+    if (_messagePollInProgress) return;
+    _messagePollInProgress = true;
+    try {
+      final conversations = await StudentChatRepository.instance
+          .getConversations();
+      if (!mounted) return;
+      final unreadCount = conversations.fold<int>(
+        0,
+        (count, conversation) => count + conversation.unreadCount,
+      );
+      final hasNewMessages =
+          _lastUnreadMessageCount != null &&
+          unreadCount > _lastUnreadMessageCount!;
+      _lastUnreadMessageCount = unreadCount;
+      if (hasNewMessages) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('لديك رسالة جديدة.'),
+              behavior: SnackBarBehavior.floating,
+              duration: Duration(seconds: 3),
+            ),
+          );
+      }
+    } catch (error, stackTrace) {
+      debugPrint(
+        'Failed to poll student chat notifications: $error\n$stackTrace',
+      );
+    } finally {
+      _messagePollInProgress = false;
+    }
   }
 
   String _resolveStudentId() {
@@ -106,6 +163,7 @@ class _StudentShellState extends State<StudentShell> {
   }
 
   Widget _buildShell(String sid) {
+    _startMessagePolling();
     final pages = _getPages(sid);
 
     return Scaffold(
@@ -138,7 +196,7 @@ class _StudentShellState extends State<StudentShell> {
             elevation: 0,
             highlightElevation: 2,
             shape: const CircleBorder(),
-            tooltip: 'التواصل مع الأساتذة',
+            tooltip: 'المحادثات المباشرة',
             child: const Icon(Icons.chat_rounded, size: 22),
           ),
         ),

@@ -11,10 +11,7 @@ Widget wrapWidget(Widget widget, {Size size = const Size(360, 800)}) {
         padding: const EdgeInsets.only(top: 24, bottom: 16),
         viewInsets: EdgeInsets.zero,
       ),
-      child: Directionality(
-        textDirection: TextDirection.rtl,
-        child: widget,
-      ),
+      child: Directionality(textDirection: TextDirection.rtl, child: widget),
     ),
   );
 }
@@ -27,31 +24,24 @@ void main() {
   const testWidths = [360.0, 390.0, 412.0];
 
   for (final width in testWidths) {
-    testWidgets('DoctorCommunityScreen renders with zero overflow at width $width',
-        (tester) async {
-      final size = Size(width, 800);
-      tester.view.physicalSize = size;
-      tester.view.devicePixelRatio = 1.0;
-      addTearDown(tester.view.resetPhysicalSize);
+    testWidgets(
+      'DoctorCommunityScreen renders with zero overflow at width $width',
+      (tester) async {
+        final size = Size(width, 800);
+        tester.view.physicalSize = size;
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
 
-      await tester.pumpWidget(wrapWidget(const DoctorCommunityScreen(), size: size));
-      await tester.pumpAndSettle();
+        await tester.pumpWidget(
+          wrapWidget(const DoctorCommunityScreen(), size: size),
+        );
+        await tester.pumpAndSettle();
 
-      // Verify title is visible and readable
-      expect(find.text('مجتمع المقررات الأكاديمي'), findsOneWidget);
-
-      // Verify badge is visible and readable
-      expect(find.text('بيانات تجريبية'), findsOneWidget);
-
-      // Verify icon is present
-      expect(find.byIcon(Icons.forum_outlined), findsOneWidget);
-
-      // Verify buttons below are present and unchanged
-      expect(find.text('إعلان جديد'), findsOneWidget);
-      expect(find.text('مناقشة جديدة'), findsOneWidget);
-
-      // Let framework assert
-      expect(find.text('إعلان جديد'), findsOneWidget);
-    });
+        expect(find.text('مجتمع الجامعة'), findsOneWidget);
+        expect(find.text('Class Feed'), findsOneWidget);
+        expect(find.text('منشور جديد'), findsOneWidget);
+        expect(find.byIcon(Icons.search_rounded), findsOneWidget);
+      },
+    );
   }
 }
